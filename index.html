@@ -6,10 +6,18 @@
     <title>YouTube Metrics Dashboard</title>
     <!-- Include Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Include DataTables -->
+    <!-- Include DataTables and extensions -->
     <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/1.11.5/css/jquery.dataTables.css">
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/buttons/2.2.2/css/buttons.dataTables.min.css">
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.2.2/js/dataTables.buttons.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.3/jszip.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.2.2/js/buttons.html5.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.2.2/js/buttons.print.min.js"></script>
+    <!-- Include Google API client -->
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://accounts.google.com/gsi/client"></script>
     <!-- Include modern icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <!-- Custom styles -->
@@ -192,6 +200,35 @@
         .btn-secondary:hover {
             background-color: #3a3a3a;
             box-shadow: 0 4px 8px rgba(40, 40, 40, 0.3);
+        }
+        
+        /* DataTables button styling */
+        .dt-button {
+            background-color: var(--secondary) !important;
+            color: white !important;
+            border: none !important;
+            padding: 8px 16px !important;
+            border-radius: 8px !important;
+            cursor: pointer !important;
+            font-size: 0.9rem !important;
+            font-weight: 500 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: all 0.3s !important;
+            box-shadow: 0 2px 4px rgba(40, 40, 40, 0.2) !important;
+            margin-right: 8px !important;
+            margin-bottom: 10px !important;
+        }
+        
+        .dt-button:hover {
+            background-color: #3a3a3a !important;
+            transform: translateY(-2px) !important;
+            box-shadow: 0 4px 8px rgba(40, 40, 40, 0.3) !important;
+        }
+        
+        .dt-button i {
+            margin-right: 6px !important;
         }
         
         .btn-group {
@@ -447,6 +484,23 @@
             </div>
         </div>
         
+        <!-- Channel IDs Input Card -->
+        <div class="card">
+            <h2><i class="fas fa-broadcast-tower"></i> Fetch Livestreams by Channel</h2>
+            <p>Enter YouTube channel IDs below (one per line) to fetch all available livestreams from these channels.</p>
+            
+            <div class="input-area">
+                <label for="channel-ids"><i class="fas fa-users"></i> Channel IDs (one per line):</label>
+                <textarea id="channel-ids" placeholder="UCeY0bbntWzzVIaj2z3QigXg&#10;UC4R8DWoMoI7CAwX8_LjQHig&#10;Enter more channel IDs..."></textarea>
+                
+                <div class="btn-group">
+                    <button id="fetch-channels-button" class="btn">
+                        <i class="fas fa-satellite-dish"></i> Fetch Livestreams
+                    </button>
+                </div>
+            </div>
+        </div>
+        
         <!-- Loading Indicator -->
         <div id="loading" class="loading hidden">
             <div class="spinner"></div>
@@ -566,6 +620,8 @@
         const errorText = document.getElementById('error-text');
         const debugInfo = document.getElementById('debug-info');
         const channelFilter = document.getElementById('channel-filter');
+        const channelIdsTextarea = document.getElementById('channel-ids');
+        const fetchChannelsButton = document.getElementById('fetch-channels-button');
         
         // Debug logging
         function log(message) {
@@ -628,8 +684,166 @@
             // Fetch YouTube data
             fetchYouTubeData(apiKey, videoIds);
         });
+
+        fetchChannelsButton.addEventListener('click', () => {
+            // Reset UI
+            errorMessage.classList.add('hidden');
+            visualizationContainer.classList.add('hidden');
+            debugLog = [];
+            log('Channel livestream fetch started');
+            
+            const apiKey = apiKeyInput.value.trim();
+            const channelIdsText = channelIdsTextarea.value.trim();
+            
+            if (!apiKey) {
+                showError("Please enter your YouTube API Key");
+                return;
+            }
+            
+            if (!channelIdsText) {
+                showError("Please enter at least one channel ID");
+                return;
+            }
+            
+            // Parse channel IDs
+            const channelIds = channelIdsText
+                .split(/[\n,\s]+/)
+                .map(id => id.trim())
+                .filter(id => id.length > 5);
+            
+            if (channelIds.length === 0) {
+                showError("No valid channel IDs found");
+                return;
+            }
+            
+            log(`Parsed ${channelIds.length} channel IDs: ${channelIds.join(', ')}`);
+            
+            // Show loading spinner
+            loadingElement.classList.remove('hidden');
+            
+            // Fetch livestreams by channel
+            fetchLivestreamsByChannel(apiKey, channelIds);
+        });
         
         channelFilter.addEventListener('change', updateCharts);
+        
+        // Function to fetch all live streams for a list of channels
+        function fetchLivestreamsByChannel(apiKey, channelIds) {
+            // Clear previous data
+            allData = [];
+            
+            // Process channels sequentially to avoid rate limits
+            processChannel(0);
+            
+            function processChannel(channelIndex) {
+                if (channelIndex >= channelIds.length) {
+                    // All channels processed
+                    log(`All channels processed. Retrieved data for ${allData.length} livestreams.`);
+                    processData(allData);
+                    loadingElement.classList.add('hidden');
+                    return;
+                }
+                
+                const channelId = channelIds[channelIndex];
+                log(`Processing channel ${channelIndex + 1}/${channelIds.length}: ${channelId}`);
+                
+                // Step 1: Get channel's uploads playlist ID
+                const channelApiUrl = `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${apiKey}`;
+                
+                fetch(channelApiUrl)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (!data.items || data.items.length === 0) {
+                            log(`No channel found for ID: ${channelId}`);
+                            processChannel(channelIndex + 1);
+                            return;
+                        }
+                        
+                        // Step 2: Search for live streams in this channel
+                        const searchApiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&eventType=live&type=video&maxResults=50&key=${apiKey}`;
+                        
+                        return fetch(searchApiUrl);
+                    })
+                    .then(response => {
+                        if (!response) return null; // Handle case where previous block didn't return a search
+                        if (!response.ok) {
+                            throw new Error(`HTTP error ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (!data) return; // Handle case where previous block didn't return data
+                        
+                        log(`Found ${data.items ? data.items.length : 0} livestreams for channel ${channelId}`);
+                        
+                        if (data.items && data.items.length > 0) {
+                            // Extract video IDs from search results
+                            const videoIds = data.items.map(item => item.id.videoId).join(',');
+                            
+                            // Step 3: Get detailed info about these videos
+                            const videosApiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,liveStreamingDetails,contentDetails&id=${videoIds}&key=${apiKey}`;
+                            
+                            return fetch(videosApiUrl);
+                        }
+                    })
+                    .then(response => {
+                        if (!response) return null; // Handle case where no livestreams were found
+                        if (!response.ok) {
+                            throw new Error(`HTTP error ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (!data) {
+                            processChannel(channelIndex + 1);
+                            return;
+                        }
+                        
+                        if (data.items && data.items.length > 0) {
+                            // Process each video item (same processing as in fetchYouTubeData)
+                            data.items.forEach(item => {
+                                try {
+                                    const videoData = {
+                                        video_id: item.id,
+                                        title: item.snippet.title,
+                                        channel_title: item.snippet.channelTitle,
+                                        channel_id: item.snippet.channelId,
+                                        publish_date: item.snippet.publishedAt ? new Date(item.snippet.publishedAt).toLocaleDateString() : 'N/A',
+                                        view_count: parseInt(item.statistics.viewCount) || 0,
+                                        like_count: parseInt(item.statistics.likeCount) || 0,
+                                        comment_count: parseInt(item.statistics.commentCount) || 0,
+                                        is_livestream: !!item.liveStreamingDetails,
+                                        concurrent_viewers: item.liveStreamingDetails && item.liveStreamingDetails.concurrentViewers ? 
+                                            parseInt(item.liveStreamingDetails.concurrentViewers) : 'N/A'
+                                    };
+                                    
+                                    allData.push(videoData);
+                                    log(`Processed livestream: ${item.id} - ${item.snippet.title}`);
+                                } catch (err) {
+                                    log(`Error processing video ${item.id}: ${err.message}`);
+                                }
+                            });
+                        }
+                        
+                        // Process next channel after a small delay
+                        setTimeout(() => {
+                            processChannel(channelIndex + 1);
+                        }, 200);
+                    })
+                    .catch(error => {
+                        log(`Error processing channel ${channelId}: ${error.message}`);
+                        // Continue with next channel despite errors
+                        setTimeout(() => {
+                            processChannel(channelIndex + 1);
+                        }, 200);
+                    });
+            }
+        }
         
         // Fetch data from YouTube API
         function fetchYouTubeData(apiKey, videoIds) {
@@ -1062,6 +1276,28 @@
                 order: [[4, 'desc']], // Sort by views by default
                 pageLength: 10,
                 responsive: true,
+                dom: 'Bfrtip', // Buttons, filter, processing, table, pagination
+                buttons: [
+                    {
+                        extend: 'csv',
+                        text: '<i class="fas fa-file-csv"></i> Export CSV',
+                        className: 'btn btn-secondary',
+                        filename: 'youtube_metrics_export',
+                        exportOptions: {
+                            modifier: {
+                                search: 'applied',
+                                order: 'applied'
+                            }
+                        }
+                    },
+                    {
+                        text: '<i class="fab fa-google-drive"></i> Export to Google Sheets',
+                        className: 'btn btn-secondary',
+                        action: function(e, dt, button, config) {
+                            exportToGoogleSheets(dt.data().toArray());
+                        }
+                    }
+                ],
                 language: {
                     search: "Search videos:",
                     lengthMenu: "Show _MENU_ videos per page",
@@ -1081,6 +1317,112 @@
                     { targets: 6, render: $.fn.dataTable.render.number(',', '.', 0) }, // Format likes
                     { targets: 7, render: $.fn.dataTable.render.number(',', '.', 0) }  // Format comments
                 ]
+            });
+        }
+        
+        // Function to export data to Google Sheets
+        function exportToGoogleSheets(data) {
+            log('Attempting to export data to Google Sheets');
+            
+            // Check if Google API is loaded
+            if (!gapi || !gapi.client) {
+                log('Google API not loaded yet, attempting to load it');
+                loadGoogleAPI();
+                return;
+            }
+            
+            // Check if user is signed in to Google
+            if (!gapi.auth2 || !gapi.auth2.getAuthInstance() || !gapi.auth2.getAuthInstance().isSignedIn.get()) {
+                log('User not signed in to Google, initiating sign-in process');
+                authenticateWithGoogle();
+                return;
+            }
+            
+            // User is authenticated, create a new Google Sheet
+            createGoogleSheet(data);
+        }
+        
+        // Load Google API
+        function loadGoogleAPI() {
+            log('Loading Google API');
+            
+            gapi.load('client:auth2', () => {
+                gapi.client.init({
+                    apiKey: apiKeyInput.value,
+                    clientId: 'YOUR_CLIENT_ID.apps.googleusercontent.com', // Replace with your Google Client ID
+                    discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
+                    scope: 'https://www.googleapis.com/auth/spreadsheets'
+                }).then(() => {
+                    log('Google API loaded, checking if user is signed in');
+                    if (!gapi.auth2.getAuthInstance().isSignedIn.get()) {
+                        authenticateWithGoogle();
+                    } else {
+                        log('User already signed in, proceeding with export');
+                        exportToGoogleSheets(dataTable.data().toArray());
+                    }
+                }).catch(error => {
+                    log(`Error initializing Google API: ${error.message}`);
+                    showError(`Could not initialize Google API: ${error.message}`);
+                });
+            });
+        }
+        
+        // Authenticate with Google
+        function authenticateWithGoogle() {
+            log('Authenticating with Google');
+            
+            // Show a message to the user
+            showError('Please sign in to your Google account to continue with the export. Click the Google Sign-in button that appears.');
+            
+            // Trigger sign-in process
+            gapi.auth2.getAuthInstance().signIn().then(() => {
+                log('User signed in successfully');
+                errorMessage.classList.add('hidden');
+                exportToGoogleSheets(dataTable.data().toArray());
+            }).catch(error => {
+                log(`Google authentication failed: ${error.message}`);
+                showError(`Google authentication failed: ${error.message}`);
+            });
+        }
+        
+        // Create a new Google Sheet with the data
+        function createGoogleSheet(data) {
+            log('Creating a new Google Sheet');
+            
+            // Prepare column headers
+            const headers = [
+                ['Video ID', 'Title', 'Channel', 'Published', 'Views', 'Peak Viewers', 'Likes', 'Comments']
+            ];
+            
+            // Create a new spreadsheet
+            gapi.client.sheets.spreadsheets.create({
+                properties: {
+                    title: 'YouTube Metrics Export - ' + new Date().toLocaleDateString()
+                }
+            }).then(response => {
+                const spreadsheetId = response.result.spreadsheetId;
+                log(`New spreadsheet created with ID: ${spreadsheetId}`);
+                
+                // Write headers and data to the spreadsheet
+                gapi.client.sheets.spreadsheets.values.update({
+                    spreadsheetId: spreadsheetId,
+                    range: 'Sheet1!A1',
+                    valueInputOption: 'RAW',
+                    resource: {
+                        values: [...headers, ...data]
+                    }
+                }).then(() => {
+                    log('Data written to spreadsheet successfully');
+                    
+                    // Open the spreadsheet in a new tab
+                    window.open(`https://docs.google.com/spreadsheets/d/${spreadsheetId}`, '_blank');
+                }).catch(error => {
+                    log(`Error writing data to spreadsheet: ${error.message}`);
+                    showError(`Error writing data to spreadsheet: ${error.message}`);
+                });
+            }).catch(error => {
+                log(`Error creating spreadsheet: ${error.message}`);
+                showError(`Error creating spreadsheet: ${error.message}`);
             });
         }
         
